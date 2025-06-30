@@ -1,0 +1,51 @@
+# Pliki wykonywalne
+sun_ftxui
+
+# Pliki obiektowe
+*.o
+*.obj
+
+# Pliki build
+build/
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+*.cmake
+*.pc
+
+# Pliki tymczasowe i backup
+*~
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*#
+
+# Pliki IDE/Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Pliki systemu
+.DS_Store
+Thumbs.db
+
+# Logi i dane testowe
+*.log
+output.txt
+*.json
+*.csv
+
+# Pliki kompresji
+*.zip
+*.tar.gz
+*.rar
+
+# Pliki dokumentacji generowane
+doc/html/
+doc/latex/

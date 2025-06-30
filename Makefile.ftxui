@@ -1,0 +1,160 @@
+# Makefile zoptymalizowany dla Intel Atom D510 @ 1.66GHz (2 cores, 4 threads HT), 2.8GB RAM
+# Debian 12, GCC 12.2.0
+
+CXX = g++
+
+# Optymalizacje dla Intel Atom (starszy procesor)
+ARCH_FLAGS = -march=bonnell -mtune=bonnell -m64
+
+# Flagi optymalizacji dostosowane do słabego procesora i małej ilości RAM
+OPTIMIZATION_FLAGS = -O2 -pipe -fomit-frame-pointer -ffunction-sections -fdata-sections
+
+# Flagi C++ i ostrzeżenia
+CXX_FLAGS = -std=c++17 -Wall -Wextra -Wno-unused-variable
+
+# Flagi linkera dla oszczędności pamięci
+LINKER_FLAGS = -Wl,--gc-sections -Wl,--as-needed -Wl,-O1
+
+# Kompletne flagi kompilacji
+CXXFLAGS = $(CXX_FLAGS) $(ARCH_FLAGS) $(OPTIMIZATION_FLAGS)
+
+# Ścieżki do bibliotek
+FTXUI_INCLUDE = -I./ftxui/include
+FTXUI_LIBS = -L./ftxui/build -lftxui-component -lftxui-dom -lftxui-screen
+
+# Biblioteki systemowe (wykorzystujemy zainstalowane pakiety)
+SYSTEM_LIBS = -lmodbus -lpthread
+
+# Wszystkie biblioteki
+LIBS = $(FTXUI_LIBS) $(SYSTEM_LIBS)
+
+# Pliki
+TARGET = sun_ftxui
+SOURCE = sun_ftxui.cpp
+
+# Automatyczne wykrywanie nlohmann-json
+NLOHMANN_INCLUDE = $(shell pkg-config --cflags nlohmann_json 2>/dev/null || echo "-I/usr/include")
+
+# Wszystkie include paths
+INCLUDES = $(FTXUI_INCLUDE) $(NLOHMANN_INCLUDE)
+
+# Pełna komenda kompilacji
+COMPILE_CMD = $(CXX) $(CXXFLAGS) $(INCLUDES) -o $(TARGET) $(SOURCE) $(LIBS) $(LINKER_FLAGS)
+
+# Maksymalna liczba zadań równoległych (2 rdzenie = 2 zadania, żeby nie przeciążać)
+MAKEFLAGS += -j2
+
+.PHONY: all clean debug release install-deps test-connection run profile size info
+
+# Domyślny target
+all: $(TARGET)
+
+# Budowanie release
+$(TARGET): $(SOURCE)
+	@echo "=== Kompilacja dla Intel Atom D510 ==="
+	@echo "Optymalizacje: $(ARCH_FLAGS) $(OPTIMIZATION_FLAGS)"
+	@echo "Biblioteki: $(LIBS)"
+	$(COMPILE_CMD)
+	@echo "=== Kompilacja zakończona ==="
+	@echo "Rozmiar pliku wykonywalnego:"
+	@ls -lh $(TARGET)
+
+# Wersja debug (bez optymalizacji, z symbolami debug)
+debug: OPTIMIZATION_FLAGS = -O0 -g -DDEBUG
+debug: CXXFLAGS = $(CXX_FLAGS) $(ARCH_FLAGS) $(OPTIMIZATION_FLAGS)
+debug: TARGET = sun_ftxui_debug
+debug: $(TARGET)
+
+# Wersja release z maksymalnymi optymalizacjami
+release: OPTIMIZATION_FLAGS = -O3 -DNDEBUG -flto -ffast-math
+release: LINKER_FLAGS += -flto
+release: TARGET = sun_ftxui_release
+release: $(TARGET)
+
+# Profilowanie
+profile: OPTIMIZATION_FLAGS = -O2 -pg
+profile: LINKER_FLAGS += -pg
+profile: TARGET = sun_ftxui_profile
+profile: $(TARGET)
+
+# Czyszczenie
+clean:
+	rm -f sun_ftxui sun_ftxui_debug sun_ftxui_release sun_ftxui_profile
+	@echo "Pliki wyczyszczone"
+
+# Instalacja zależności
+install-deps:
+	sudo apt update
+	sudo apt install -y libmodbus-dev nlohmann-json3-dev build-essential cmake
+	@echo "Zależności zainstalowane"
+
+# Test połączenia
+test-connection:
+	@echo "Testowanie połączenia z inverterem..."
+	ping -c 3 10.88.45.1 || echo "Inverter niedostępny"
+
+# Uruchomienie
+run: $(TARGET)
+	@echo "Uruchamianie aplikacji..."
+	./$(TARGET)
+
+# Informacje o systemie
+info:
+	@echo "=== Informacje o systemie ==="
+	@echo "CPU: $$(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2)"
+	@echo "Rdzenie: $$(nproc) ($$(grep -c processor /proc/cpuinfo) wątków)"
+	@echo "RAM: $$(free -h | grep Mem | awk '{print $$2}')"
+	@echo "Kompilator: $$(g++ --version | head -1)"
+	@echo "Architektura: $$(uname -m)"
+	@echo "System: $$(lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2)"
+
+# Analiza rozmiaru pliku wykonywalnego
+size: $(TARGET)
+	@echo "=== Analiza rozmiaru ==="
+	size $(TARGET)
+	@echo ""
+	@echo "Szczegóły sekcji:"
+	objdump -h $(TARGET) | grep -E "(\.text|\.data|\.bss|\.rodata)"
+
+# Test wydajności kompilacji
+benchmark-build:
+	@echo "=== Test wydajności kompilacji ==="
+	make clean
+	time make -j1 > /dev/null
+	make clean
+	time make -j2 > /dev/null
+	make clean
+	time make -j4 > /dev/null
+
+# Sprawdzenie zależności
+check-deps:
+	@echo "=== Sprawdzenie bibliotek ==="
+	@echo -n "libmodbus: "; pkg-config --exists libmodbus && echo "OK" || echo "BRAK"
+	@echo -n "nlohmann-json: "; test -f /usr/include/nlohmann/json.hpp && echo "OK" || echo "BRAK"
+	@echo -n "FTXUI: "; test -f ./ftxui/include/ftxui/dom/elements.hpp && echo "OK" || echo "BRAK"
+
+# Instalacja FTXUI (jeśli nie ma)
+install-ftxui:
+	@if [ ! -d "./ftxui" ]; then \
+		echo "Klonowanie FTXUI..."; \
+		git clone https://github.com/ArthurSonzogni/FTXUI.git ftxui; \
+	fi
+	@if [ ! -f "./ftxui/build/libftxui-screen.a" ]; then \
+		echo "Budowanie FTXUI..."; \
+		cd ftxui && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2; \
+	fi
+
+# Help
+help:
+	@echo "Dostępne komendy:"
+	@echo "  make          - kompilacja standardowa (release)"
+	@echo "  make debug    - kompilacja debug"
+	@echo "  make release  - kompilacja z maksymalnymi optymalizacjami"
+	@echo "  make profile  - kompilacja z profilowaniem"
+	@echo "  make clean    - czyszczenie"
+	@echo "  make run      - kompilacja i uruchomienie"
+	@echo "  make info     - informacje o systemie"
+	@echo "  make size     - analiza rozmiaru pliku"
+	@echo "  make check-deps - sprawdzenie zależności"
+	@echo "  make install-deps - instalacja zależności systemowych"
+	@echo "  make install-ftxui - instalacja FTXUI"
