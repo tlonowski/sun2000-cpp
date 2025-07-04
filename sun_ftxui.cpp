@@ -10,8 +10,6 @@
 #include <atomic>
 #include <mutex>
 #include <deque>
-#include <algorithm>
-#include <cmath>
 
 // FTXUI includes
 #include "ftxui/component/captured_mouse.hpp"
@@ -19,7 +17,8 @@
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
-#include "ftxui/screen/terminal.hpp"
+
+
 
 using json = nlohmann::ordered_json;
 using namespace std;
@@ -49,29 +48,9 @@ struct InverterData {
     double phase_A_current = 0.0;
     double phase_B_current = 0.0;
     double phase_C_current = 0.0;
-    
-    // Parametry PV
-    double pv1_voltage = 0.0;
-    double pv1_current = 0.0;
-    double pv2_voltage = 0.0;
-    double pv2_current = 0.0;
-    double pv1_power = 0.0;
-    double pv2_power = 0.0;
-    
     int wifi_signal = -65;
     int ping_ms = 0;
     string last_error = "";
-    
-    // Statusy bitowe
-    uint16_t state1 = 0;      // Rejestr 32002 - podstawowe statusy
-    uint16_t state2 = 0;      // Rejestr 32003 - rozszerzone statusy  
-    uint16_t state3 = 0;      // Rejestr 32004 - statusy komunikacji
-    
-    // Alarmy bitowe
-    uint16_t alarm1 = 0;      // Rejestr 32008 - alarmy temperatury i błędów
-    uint16_t alarm2 = 0;      // Rejestr 32009 - alarmy czujników
-    uint16_t alarm3 = 0;      // Rejestr 32010 - alarmy systemowe
-    uint16_t fault_code = 0;  // Rejestr 32090 - numeryczny kod błędu
 };
 
 // --- PowerChart ---
@@ -92,225 +71,6 @@ struct PowerChart {
     int getDataCount() const { return data.size(); }
     vector<pair<chrono::system_clock::time_point, double>> getData() const { return data; }
 };
-
-// --- Funkcje pomocnicze do analizy statusów bitowych ---
-struct BitStatus {
-    int bit;
-    string name;
-    string description;
-    string priority;
-    Color color;
-};
-
-// Definicje bitów dla STATE1 (32002)
-vector<BitStatus> STATE1_BITS = {
-    {0, "Standby", "Tryb oczekiwania", "INFO", Color::Yellow},
-    {1, "Sieć dostępna", "Napięcie sieci w normie", "OK", Color::Green},
-    {2, "On-grid", "Inverter pracuje on-grid", "OK", Color::Green},
-    {3, "Tryb wyłączenia", "Inverter wyłączony", "UWAGA", Color::Yellow},
-    {4, "Oszczędzanie energii", "Niska moc wejściowa", "INFO", Color::Yellow},
-    {5, "Eksport energii", "Oddawanie energii do sieci", "OK", Color::Green},
-    {6, "Synchronizacja", "Synchronizacja z siecią", "INFO", Color::Yellow},
-    {7, "Tryb pracy", "Normalny tryb pracy", "OK", Color::Green},
-    {8, "Debugowanie", "Diagnostyka systemu", "UWAGA", Color::Yellow},
-    {9, "Serwis", "Serwis/konserwacja", "UWAGA", Color::Yellow},
-    {10, "Aktualizacja", "Aktualizacja firmware", "PROCES", Color::Cyan},
-    {11, "Test", "Testy systemu", "INFO", Color::Yellow},
-    {12, "Konfiguracja", "Konfiguracja parametrów", "CONFIG", Color::Cyan},
-    {13, "Monitorowanie", "Aktywne monitorowanie", "INFO", Color::Yellow},
-    {14, "Tryb awaryjny", "Stan awaryjny", "KRYTYCZNY", Color::Red},
-    {15, "Offline", "Brak komunikacji", "KRYTYCZNY", Color::Red}
-};
-
-// Definicje bitów dla ALARM1 (32008) - najważniejsze alarmy
-vector<BitStatus> ALARM1_BITS = {
-    {0, "Wysoka temp. wew.", ">75°C w module głównym", "KRYTYCZNY", Color::Red},
-    {1, "Wysoka temp. radiatora", ">85°C na radiatorze", "KRYTYCZNY", Color::Red},
-    {2, "Wysoka temp. mocy", ">90°C w module mocy", "KRYTYCZNY", Color::Red},
-    {3, "Błąd wentylatora", "Wentylator nie działa", "KRYTYCZNY", Color::Red},
-    {4, "Błąd Phase A", "Problem z fazą A", "WAŻNY", Color::Magenta},
-    {5, "Błąd Phase B", "Problem z fazą B", "WAŻNY", Color::Magenta},
-    {6, "Błąd Phase C", "Problem z fazą C", "WAŻNY", Color::Magenta},
-    {7, "Błąd SPD", "Przepięciówka uszkodzona", "WAŻNY", Color::Magenta},
-    {8, "Odwr. polar. PV1", "+/- zamienione w string 1", "KRYTYCZNY", Color::Red},
-    {9, "Odwr. polar. PV2", "+/- zamienione w string 2", "KRYTYCZNY", Color::Red},
-    {10, "PV1 doziemiony", "String 1 zwarcie do ziemi", "KRYTYCZNY", Color::Red},
-    {11, "PV2 doziemiony", "String 2 zwarcie do ziemi", "KRYTYCZNY", Color::Red},
-    {12, "Niska rez. izolacji", "<1MΩ - zagrożenie!", "KRYTYCZNY", Color::Red},
-    {13, "Błąd czuj. temp.", "Uszkodzony termometr", "WAŻNY", Color::Magenta},
-    {14, "Błąd kom. AFCI", "Problem z Arc Fault", "WAŻNY", Color::Magenta},
-    {15, "Błąd AFCI", "Wykryto łuk elektryczny", "KRYTYCZNY", Color::Red}
-};
-
-// Funkcja sprawdzająca czy bit jest ustawiony
-bool checkBit(uint16_t value, int bit) {
-    return (value & (1 << bit)) != 0;
-}
-
-// Funkcja zliczająca aktywne bity
-int countActiveBits(uint16_t value) {
-    return __builtin_popcount(value);
-}
-
-// Funkcja sprawdzająca czy są alarmy krytyczne
-bool hasCriticalAlarms(uint16_t alarm1, uint16_t alarm2, uint16_t alarm3) {
-    // ALARM1: bity krytyczne - 0,1,2,3,8,9,10,11,12,15
-    bool alarm1_critical = (alarm1 & 0x9F0F) != 0;
-    // ALARM2: bity krytyczne - 10,13,14,15
-    bool alarm2_critical = (alarm2 & 0xE400) != 0;
-    // ALARM3: bity krytyczne - 0,7,8,9,14,15
-    bool alarm3_critical = (alarm3 & 0xC380) != 0;
-    
-    return alarm1_critical || alarm2_critical || alarm3_critical;
-}
-
-// Funkcja analizująca statusy i zwracająca kolorowy tekst
-Element analyzeStatusBits(uint16_t state1, uint16_t state2, uint16_t state3) {
-    vector<Element> status_elements;
-    
-    // Sprawdź najważniejsze statusy z STATE1
-    if (checkBit(state1, 2)) {  // On-grid
-        status_elements.push_back(text("ON-GRID") | color(Color::Green) | bold);
-    }
-    if (checkBit(state1, 7)) {  // Tryb pracy
-        status_elements.push_back(text("PRACA") | color(Color::Green));
-    }
-    if (checkBit(state1, 0)) {  // Standby
-        status_elements.push_back(text("STANDBY") | color(Color::Yellow));
-    }
-    if (checkBit(state1, 14)) {  // Tryb awaryjny
-        status_elements.push_back(text("AWARIA") | color(Color::Red) | bold);
-    }
-    if (checkBit(state1, 15)) {  // Offline
-        status_elements.push_back(text("OFFLINE") | color(Color::Red) | bold);
-    }
-    
-    // Dodaj informacje z STATE2 i STATE3 jeśli są dostępne
-    if (state2 != 0) {
-        status_elements.push_back(text("EXT") | color(Color::Cyan));
-    }
-    if (state3 != 0) {
-        status_elements.push_back(text("COMM") | color(Color::Magenta));
-    }
-    
-    if (status_elements.empty()) {
-        status_elements.push_back(text("NIEZNANY") | color(Color::Yellow));
-    }
-    
-    // Dodaj spacje między elementami statusu
-    vector<Element> spaced_elements;
-    for (size_t i = 0; i < status_elements.size(); ++i) {
-        spaced_elements.push_back(status_elements[i]);
-        if (i < status_elements.size() - 1) {
-            spaced_elements.push_back(text(" "));
-        }
-    }
-    
-    return hbox(spaced_elements);
-}
-
-// Funkcja analizująca alarmy i zwracająca podsumowanie
-Element analyzeAlarmBits(uint16_t alarm1, uint16_t alarm2, uint16_t alarm3) {
-    vector<Element> alarm_elements;
-    
-    if (alarm1 == 0 && alarm2 == 0 && alarm3 == 0) {
-        return text("✅ Brak alarmów") | color(Color::Green);
-    }
-    
-    int total_alarms = countActiveBits(alarm1) + countActiveBits(alarm2) + countActiveBits(alarm3);
-    bool critical = hasCriticalAlarms(alarm1, alarm2, alarm3);
-    
-    if (critical) {
-        alarm_elements.push_back(text("🚨 ") | color(Color::Red));
-        alarm_elements.push_back(text("KRYTYCZNE") | color(Color::Red) | bold);
-    } else {
-        alarm_elements.push_back(text("⚠️ ") | color(Color::Yellow));
-        alarm_elements.push_back(text("OSTRZEŻENIA") | color(Color::Yellow) | bold);
-    }
-    
-    alarm_elements.push_back(text(" (" + to_string(total_alarms) + ")") | color(Color::White));
-    
-    return hbox(alarm_elements);
-}
-
-// Funkcja generująca szczegółowy widok alarmów
-Element generateDetailedAlarms(uint16_t alarm1, uint16_t alarm2, uint16_t alarm3, uint16_t fault_code) {
-    vector<Element> alarm_details;
-    
-    // Nagłówek
-    alarm_details.push_back(text("🚨 SZCZEGÓŁY ALARMÓW") | center | bold | color(Color::Red));
-    alarm_details.push_back(separator());
-    
-    bool has_any_alarm = false;
-    
-    // ALARM1 - najważniejsze alarmy
-    if (alarm1 != 0) {
-        alarm_details.push_back(text("ALARM1 (Temp/Błędy): 0x" + 
-            []() { stringstream ss; ss << hex << uppercase; return ss; }().str() + 
-            to_string(alarm1)) | color(Color::Red) | bold);
-        
-        for (const auto& bit_def : ALARM1_BITS) {
-            if (checkBit(alarm1, bit_def.bit)) {
-                auto bit_line = hbox({
-                    text("  Bit " + to_string(bit_def.bit) + ": "),
-                    text(bit_def.name) | color(bit_def.color) | bold,
-                    text(" - " + bit_def.description) | color(Color::White)
-                });
-                alarm_details.push_back(bit_line);
-                has_any_alarm = true;
-            }
-        }
-        alarm_details.push_back(separator());
-    }
-    
-    // ALARM2 - alarmy czujników (tylko jeśli są aktywne)
-    if (alarm2 != 0) {
-        alarm_details.push_back(text("ALARM2 (Czujniki): 0x" + 
-            []() { stringstream ss; ss << hex << uppercase; return ss; }().str() + 
-            to_string(alarm2)) | color(Color::Magenta) | bold);
-        
-        // Pokazuj tylko aktywne bity dla ALARM2 (uproszczone)
-        int bit_count = countActiveBits(alarm2);
-        alarm_details.push_back(text("  Aktywnych alarmów czujników: " + to_string(bit_count)) | color(Color::White));
-        has_any_alarm = true;
-        alarm_details.push_back(separator());
-    }
-    
-    // ALARM3 - alarmy systemowe (tylko jeśli są aktywne)
-    if (alarm3 != 0) {
-        alarm_details.push_back(text("ALARM3 (System): 0x" + 
-            []() { stringstream ss; ss << hex << uppercase; return ss; }().str() + 
-            to_string(alarm3)) | color(Color::Yellow) | bold);
-        
-        int bit_count = countActiveBits(alarm3);
-        alarm_details.push_back(text("  Aktywnych alarmów systemowych: " + to_string(bit_count)) | color(Color::White));
-        has_any_alarm = true;
-        alarm_details.push_back(separator());
-    }
-    
-    // Kod błędu
-    if (fault_code != 0) {
-        string fault_desc = "Nieznany kod błędu";
-        if (fault_code >= 0x0001 && fault_code <= 0x0999) fault_desc = "Błędy temperatury";
-        else if (fault_code >= 0x1000 && fault_code <= 0x1999) fault_desc = "Błędy napięcia";
-        else if (fault_code >= 0x2000 && fault_code <= 0x2999) fault_desc = "Błędy prądu";
-        else if (fault_code >= 0x3000 && fault_code <= 0x3999) fault_desc = "Błędy izolacji";
-        else if (fault_code >= 0x4000 && fault_code <= 0x4999) fault_desc = "Błędy komunikacji";
-        else if (fault_code >= 0x5000 && fault_code <= 0x5999) fault_desc = "Błędy sprzętowe";
-        else if (fault_code >= 0x9000 && fault_code <= 0x9999) fault_desc = "Błędy krytyczne";
-        
-        alarm_details.push_back(text("FAULT CODE: 0x" + 
-            []() { stringstream ss; ss << hex << uppercase; return ss; }().str() + 
-            to_string(fault_code) + " - " + fault_desc) | color(Color::Red) | bold);
-        has_any_alarm = true;
-    }
-    
-    if (!has_any_alarm) {
-        alarm_details.push_back(text("✅ System pracuje prawidłowo") | center | color(Color::Green));
-    }
-    
-    return vbox(alarm_details) | border;
-}
 
 class HuaweiSun2000 {
 private:
@@ -371,14 +131,6 @@ public:
         json data;
         
         try {
-            // === POPRAWKI REJESTRÓW ZGODNIE Z OFICJALNĄ BIBLIOTEKĄ sun2000_modbus ===
-            // 1. STATE1: 32000 (nie 32002)
-            // 2. STATE2: 32002 (nie 32003) 
-            // 3. STATE3: 32003 32-bit (nie 32004 16-bit)
-            // 4. PV prądy: 32017, 32019 dzielnik 100
-            // 5. AC prądy: 32072, 32074, 32076 32-bit dzielnik 1000
-            // === KONIEC POPRAWEK ===
-            
             // Timestamp
             auto now = chrono::system_clock::now();
             auto time_t = chrono::system_clock::to_time_t(now);
@@ -389,109 +141,19 @@ public:
             // Model
             data["model"] = "SUN2000-8KTL-M1";
             
-            // Odczytaj kluczowe parametry wcześnie dla analizy statusu
-            uint32_t active_power_candidate1 = readHoldingRegister32(32080); // Oryginalny (może błędny w M1)
-            
-            // EKSPLORACJA: Poszukaj prawdziwego active power w M1
-            uint32_t active_power_candidate2 = readHoldingRegister32(32078); // Wcześniejszy
-            uint32_t active_power_candidate3 = readHoldingRegister32(32082); // Późniejszy  
-            uint16_t active_power_16bit_1 = readHoldingRegister(32081);      // Jako 16-bit
-            uint16_t active_power_16bit_2 = readHoldingRegister(32083);      // Jako 16-bit
-            uint16_t active_power_16bit_3 = readHoldingRegister(32084);      // Jako 16-bit
-            uint16_t active_power_16bit_4 = readHoldingRegister(32085);      // Jako 16-bit
-            
-            // Sprawdź rejestry w okolicy input power (32064)
-            uint32_t input_power = readHoldingRegister32(32064);
-            uint32_t power_candidate_near_input1 = readHoldingRegister32(32062);
-            uint32_t power_candidate_near_input2 = readHoldingRegister32(32066);
-            
-            // Oblicz active power z parametrów AC (jako backup) - POPRAWIONE REJESTRY!
-            // Według oficjalnej biblioteki sun2000_modbus prądy AC to rejestry 32-bitowe
-            uint16_t ac_voltage_a = readHoldingRegister(32069);
-            uint16_t ac_voltage_b = readHoldingRegister(32070);  
-            uint16_t ac_voltage_c = readHoldingRegister(32071);
-            uint32_t ac_current_a = readHoldingRegister32(32072);  // POPRAWKA: 32-bit, dzielnik 1000
-            uint32_t ac_current_b = readHoldingRegister32(32074);  // POPRAWKA: 32-bit, dzielnik 1000
-            uint32_t ac_current_c = readHoldingRegister32(32076);  // POPRAWKA: 32-bit, dzielnik 1000
-            
-            double calculated_active_power = ((ac_voltage_a * 0.1) * (ac_current_a * 0.001) +
-                                              (ac_voltage_b * 0.1) * (ac_current_b * 0.001) +
-                                              (ac_voltage_c * 0.1) * (ac_current_c * 0.001));
-            
-            // Wybierz najbardziej prawdopodobną wartość active power
-            uint32_t active_power = active_power_candidate1; // Domyślnie
-            
-            // Sprawdź które wartości są w sensownym zakresie (0.5-1.2 * input_power)
-            double min_ratio = 0.5;
-            double max_ratio = 1.2;
-            vector<pair<uint32_t, string>> candidates = {
-                {active_power_candidate1, "32080_original"},
-                {active_power_candidate2, "32078"},  
-                {active_power_candidate3, "32082"},
-                {(uint32_t)active_power_16bit_1, "32081_16bit"},
-                {(uint32_t)active_power_16bit_2, "32083_16bit"},
-                {(uint32_t)active_power_16bit_3, "32084_16bit"},
-                {(uint32_t)active_power_16bit_4, "32085_16bit"},
-                {power_candidate_near_input1, "32062"},
-                {power_candidate_near_input2, "32066"},
-                {(uint32_t)calculated_active_power, "calculated_from_AC"}
-            };
-            
-            string best_candidate = "32080_original";
-            for (auto& candidate : candidates) {
-                if (candidate.first > 0 && input_power > 0) {
-                    double ratio = (double)candidate.first / input_power;
-                    if (ratio >= min_ratio && ratio <= max_ratio) {
-                        active_power = candidate.first;
-                        best_candidate = candidate.second;
-                        break;
-                    }
-                }
-            }
-            
-            uint16_t state1 = readHoldingRegister(32000);  // STATE1 - podstawowe statusy (POPRAWKA: 32000, nie 32002)
-            
             // Device status
             uint16_t state = readHoldingRegister(32089);
-            string device_status = "Nieznany";
+            string device_status = "Nieznany (" + to_string(state) + ")";
             
             switch(state) {
                 case 0x0000: device_status = "Standby: inicjalizacja"; break;
                 case 0x0200: device_status = "On-grid"; break;
-                case 0x0201: device_status = "One-grid: moc ograniczona"; break;
+                case 0x0201: device_status = "On-grid: moc ograniczona"; break;
                 case 0x0300: device_status = "Wyłączony: błąd"; break;
                 case 0x0308: device_status = "Wyłączony: mała moc wejściowa"; break;
                 case 0xA000: device_status = "Standby: brak napromieniowania"; break;
             }
-            
-            /*
-            // Sprawdź STATE1 dla rzeczywistego statusu
-             bool is_on_grid = (state1 & 0x0004) != 0;  // Bit 2: On-grid
-             bool is_producing = (active_power > 100);   // Produkuje więcej niż 100W
-            
-            // Nadpisz status jeśli STATE1 wskazuje on-grid a device produkuje energię
-             if (is_on_grid && is_producing) {
-                device_status = "On-grid";
-            }
-            */
             data["device_status"] = device_status;
-            uint16_t state2 = readHoldingRegister(32002);  // STATE2 - rozszerzone statusy (POPRAWKA: 32002, nie 32003)
-            uint32_t state3 = readHoldingRegister32(32003);  // STATE3 - statusy komunikacji (POPRAWKA: 32-bit z 32003, nie 16-bit z 32004)
-            
-            data["state1"] = state1;
-            data["state2"] = state2;
-            data["state3"] = state3;
-            
-            // Odczytaj rejestry alarmów bitowych
-            uint16_t alarm1 = readHoldingRegister(32008);  // ALARM1 - alarmy temperatury i błędów
-            uint16_t alarm2 = readHoldingRegister(32009);  // ALARM2 - alarmy czujników
-            uint16_t alarm3 = readHoldingRegister(32010);  // ALARM3 - alarmy systemowe
-            uint16_t fault_code = readHoldingRegister(32090); // FAULT CODE - numeryczny kod błędu
-            
-            data["alarm1"] = alarm1;
-            data["alarm2"] = alarm2;
-            data["alarm3"] = alarm3;
-            data["fault_code"] = fault_code;
             
             // Podstawowe parametry
             uint16_t temperature = readHoldingRegister(32087);
@@ -503,144 +165,53 @@ public:
             uint32_t total_energy = readHoldingRegister32(32106);
             data["accumulated_energy_yield"] = to_string(total_energy * 0.01);
             
+            uint32_t active_power = readHoldingRegister32(32080);
             data["active_power"] = to_string((double)active_power);
             
-            // Diagnostyka active power dla M1
-            data["active_power_exploration"] = {
-                {"selected_value", active_power},
-                {"selected_register", best_candidate},
-                {"input_power_reference", input_power},
-                {"candidates", {
-                    {"32080_original", active_power_candidate1},
-                    {"32078", active_power_candidate2},
-                    {"32082", active_power_candidate3},
-                    {"32081_16bit", active_power_16bit_1},
-                    {"32083_16bit", active_power_16bit_2},
-                    {"32084_16bit", active_power_16bit_3},
-                    {"32085_16bit", active_power_16bit_4},
-                    {"32062_near_input", power_candidate_near_input1},
-                    {"32066_near_input", power_candidate_near_input2},
-                    {"calculated_from_AC", (uint32_t)calculated_active_power}
-                }},
-                {"efficiency_analysis", {
-                    {"efficiency_if_32080", (input_power > 0) ? (double)active_power_candidate1 / input_power * 100 : 0},
-                    {"efficiency_selected", (input_power > 0) ? (double)active_power / input_power * 100 : 0},
-                    {"expected_efficiency_range", "95-98%"}
-                }}
-            };
-            
+            uint32_t input_power = readHoldingRegister32(32064);
             data["input_power"] = to_string((double)input_power);
             
             uint16_t efficiency_reg = readHoldingRegister(32086);
-            double efficiency_calc = efficiency_reg * 0.01;
-            // Ogranicz sprawność do rozsądnych wartości (0-100%)
-            if (efficiency_calc > 100.0) {
-                efficiency_calc = efficiency_reg * 0.0001; // Spróbuj innej skali
-                if (efficiency_calc > 100.0) {
-                    efficiency_calc = 0.0; // Błędna wartość, ustaw na 0
-                }
+            data["efficiency"] = to_string(efficiency_reg * 0.01);
+            
+            // Częstotliwość sieci - poprawny współczynnik skalowania i alternatywne adresy
+            uint16_t grid_frequency = readHoldingRegister(32085);
+            if (grid_frequency == 0) {
+                // Spróbuj adresu z MeterEquipmentRegister  
+                grid_frequency = readHoldingRegister(37118);
             }
-            data["efficiency"] = to_string(efficiency_calc);
             
-            // Użyj już odczytanych wartości AC - POPRAWIONE REJESTRY!
+            // Debug - wartości surowe
+            data["debug_freq_32085"] = readHoldingRegister(32085);
+            data["debug_freq_37118"] = readHoldingRegister(37118);
+            
+            double frequency_hz = grid_frequency / 100.0;  // Współczynnik 100, nie 0.01!
+            // Walidacja rozumnej wartości częstotliwości (45-65 Hz)
+            if (frequency_hz < 45.0 || frequency_hz > 65.0) {
+                data["grid_frequency"] = "0.00";
+            } else {
+                data["grid_frequency"] = to_string(frequency_hz);
+            }
+            
+            // Napięcia fazowe
+            uint16_t ac_voltage_a = readHoldingRegister(32069);
             data["phase_A_voltage"] = to_string(ac_voltage_a * 0.1);
+            
+            uint16_t ac_voltage_b = readHoldingRegister(32070);
             data["phase_B_voltage"] = to_string(ac_voltage_b * 0.1);
+            
+            uint16_t ac_voltage_c = readHoldingRegister(32071);
             data["phase_C_voltage"] = to_string(ac_voltage_c * 0.1);
-            data["phase_A_current"] = to_string(ac_current_a * 0.001);  // POPRAWKA: 32-bit, dzielnik 1000
-            data["phase_B_current"] = to_string(ac_current_b * 0.001);  // POPRAWKA: 32-bit, dzielnik 1000
-            data["phase_C_current"] = to_string(ac_current_c * 0.001);  // POPRAWKA: 32-bit, dzielnik 1000
             
-            // Rozszerzone informacje o urządzeniu - z poprawkami
-            uint16_t device_type = readHoldingRegister(30070);
-            uint16_t nominal_power_raw = readHoldingRegister(30071);
-            uint16_t max_power_raw = readHoldingRegister(30072);
+            // Prądy fazowe
+            int32_t ac_current_a = (int32_t)readHoldingRegister32(32072);
+            data["phase_A_current"] = to_string(ac_current_a / 1000.0);
             
-            data["device_info"] = {
-                {"device_type", device_type},
-                {"device_type_interpretation", (device_type == 428) ? "SUN2000-8KTL-M1" : "Unknown type"},
-                {"nominal_power_raw", nominal_power_raw},
-                {"max_power_raw", max_power_raw},
-                {"nominal_power_scaled_kw", nominal_power_raw * 0.1}, // kW
-                {"max_power_scaled_kw", max_power_raw * 0.1}, // kW
-                {"power_scaling_status", (nominal_power_raw < 1000) ? "needs_investigation" : "normal"}
-            };
+            int32_t ac_current_b = (int32_t)readHoldingRegister32(32074);
+            data["phase_B_current"] = to_string(ac_current_b / 1000.0);
             
-            // Rozszerzone parametry AC
-            uint16_t power_factor_reg = readHoldingRegister(32084);
-            double power_factor = power_factor_reg * 0.001;
-            
-            data["ac_extended"] = {
-                {"power_factor", power_factor},
-                {"voltage_imbalance", {
-                    {"phase_a", ac_voltage_a * 0.1},
-                    {"phase_b", ac_voltage_b * 0.1},
-                    {"phase_c", ac_voltage_c * 0.1},
-                    {"max_deviation", abs(max({ac_voltage_a, ac_voltage_b, ac_voltage_c}) - 
-                                         min({ac_voltage_a, ac_voltage_b, ac_voltage_c})) * 0.1}
-                }}
-            };
-            
-            // Monitorowanie temperatury
-            uint16_t heatsink_temp = readHoldingRegister(32088);
-            double heatsink_corrected = heatsink_temp / 100.0; // Poprawna skala: dzielenie przez 100 zamiast mnożenia przez 0.1
-            data["thermal_monitoring"] = {
-                {"internal_temperature", temperature * 0.1},
-                {"heatsink_temperature_corrected", heatsink_corrected},
-                {"heatsink_temperature_raw_value", heatsink_temp},
-                {"heatsink_scale_correction", "using division by 100 instead of multiplication by 0.1"},
-                {"temperature_status", (temperature * 0.1 > 60) ? "HIGH" : "NORMAL"},
-                {"heatsink_status", (heatsink_corrected > 80) ? "HIGH" : "NORMAL"}
-            };
-            
-            // POPRAWIONE REJESTRY PV WEDŁUG OFICJALNEJ BIBLIOTEKI PYTHON sun2000_modbus!
-            // Źródło: sun2000_modbus/registers.py - oficjalne rejestry z pakietu Python
-            uint16_t pv1_voltage = readHoldingRegister(32016);  // PV1 Voltage - rejestr 32016, dzielnik 10
-            uint16_t pv1_current = readHoldingRegister(32017);  // PV1 Current - rejestr 32017, dzielnik 100
-            uint16_t pv2_voltage = readHoldingRegister(32018);  // PV2 Voltage - rejestr 32018, dzielnik 10  
-            uint16_t pv2_current = readHoldingRegister(32019);  // PV2 Current - rejestr 32019, dzielnik 100
-            
-            // Rejestry 32066/32067 to napięcia MPPT
-            uint16_t mppt1_voltage = readHoldingRegister(32066);  // MPPT1 Voltage
-            uint16_t mppt2_voltage = readHoldingRegister(32067);  // MPPT2 Voltage
-            
-            uint16_t daily_max_pv_voltage = readHoldingRegister(32143);
-            
-            // Oblicz moce PV z prawidłowym skalowaniem według oficjalnej biblioteki sun2000_modbus
-            double pv1_power_calculated = (pv1_voltage * 0.1) * (pv1_current * 0.01);  // V/10 * A/100
-            double pv2_power_calculated = (pv2_voltage * 0.1) * (pv2_current * 0.01);  // V/10 * A/100
-            double total_pv_power = pv1_power_calculated + pv2_power_calculated;
-            
-            data["pv_data"] = {
-                {"pv1_voltage", pv1_voltage * 0.1},
-                {"pv1_current", pv1_current * 0.01},  // POPRAWKA: dzielnik 100 zgodnie z dokumentacją
-                {"pv1_power_calculated", pv1_power_calculated},
-                {"pv2_voltage", pv2_voltage * 0.1},
-                {"pv2_current", pv2_current * 0.01},  // POPRAWKA: dzielnik 100 zgodnie z dokumentacją
-                {"pv2_power_calculated", pv2_power_calculated},
-                {"total_pv_power", total_pv_power},
-                // DEBUG: surowe wartości rejestrów
-                {"debug_raw_values", {
-                    {"raw_pv1_voltage_32016", pv1_voltage},
-                    {"raw_pv1_current_32017", pv1_current},
-                    {"raw_pv2_voltage_32018", pv2_voltage},
-                    {"raw_pv2_current_32019", pv2_current}
-                }},
-                {"input_power_validation", {
-                    {"measured_input_power", input_power},
-                    {"calculated_pv_power", total_pv_power},
-                    {"difference_watts", abs(input_power - total_pv_power)},
-                    {"difference_percent", abs(input_power - total_pv_power) / input_power * 100},
-                    {"validation_status", (abs(input_power - total_pv_power) < 100) ? "EXCELLENT_MATCH" : "GOOD_MATCH"},
-                    {"register_source", "POTWIERDZONE rejestry 32016-32019 zgodnie z oficjalną biblioteką Python sun2000_modbus"}
-                }},
-                {"mppt_voltages", {
-                    {"mppt1_voltage", mppt1_voltage * 0.1},
-                    {"mppt2_voltage", mppt2_voltage * 0.1}
-                }},
-                {"daily_max_pv_voltage", daily_max_pv_voltage * 0.1},
-                {"pv1_available", pv1_voltage > 0},
-                {"pv2_available", pv2_voltage > 0}
-            };
+            int32_t ac_current_c = (int32_t)readHoldingRegister32(32076);
+            data["phase_C_current"] = to_string(ac_current_c / 1000.0);
             
             // Dummy values
             data["sn"] = "HV1234567890";
@@ -677,9 +248,10 @@ Element drawPowerChart(PowerChart& chart, int max_width = 80, int height = 10) {
         return vbox(move(rows)) | border;
     }
     
-    // Oblicz szerokość wykresu (uwzględniając etykiety osi Y)
-    int chart_width = max_width - 10;  // 10 znaków na etykiety osi Y i separator
+    // Oblicz szerokość wykresu
+    int chart_width = max_width - 10;
     if (chart_width < 20) chart_width = 20;
+    if (chart_width > 120) chart_width = 120;
     
     // Przygotuj dane do wyświetlenia - wszystkie dostępne dane
     vector<double> display_data(chart_width, 0.0);
@@ -712,24 +284,14 @@ Element drawPowerChart(PowerChart& chart, int max_width = 80, int height = 10) {
         line.push_back(text(ylabel.str()) | color(Color::Cyan));
         line.push_back(text("|") | color(Color::Cyan));
         
-        // Punkty wykresu z symbolami graficznymi
+        // Punkty wykresu
         string chart_line;
         for (int x = 0; x < chart_width; x++) {
             if (has_data[x]) {
                 if (display_data[x] >= threshold) {
-                    // Różne symbole w zależności od wysokości wartości
-                    double intensity = display_data[x] / max_power;
-                    if (intensity > 0.8) {
-                        chart_line += "█";  // Pełny blok
-                    } else if (intensity > 0.6) {
-                        chart_line += "▓";  // Ciemny blok
-                    } else if (intensity > 0.4) {
-                        chart_line += "▒";  // Średni blok
-                    } else {
-                        chart_line += "░";  // Jasny blok
-                    }
+                    chart_line += ".";  // Kropka = jest wartość powyżej progu
                 } else {
-                    chart_line += "▁";  // Dolny blok (dane poniżej progu)
+                    chart_line += "_";  // Dane poniżej progu
                 }
             } else {
                 chart_line += " ";  // Brak danych
@@ -770,7 +332,7 @@ Element drawPowerChart(PowerChart& chart, int max_width = 80, int height = 10) {
     rows.push_back(text(time_labels) | color(Color::Cyan));
     
     // Marker aktualnego czasu
-    string current_time_marker = string(7 + chart_width - 1, ' ') + "▲";
+    string current_time_marker = string(7 + chart_width - 1, ' ') + "^";
     rows.push_back(text(current_time_marker) | color(Color::Yellow) | bold);
     
     return vbox(move(rows));
@@ -796,9 +358,10 @@ ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int 
     });
     rows.push_back(title_row | center);
     
-    // Oblicz szerokość wykresu (uwzględniając etykiety osi Y)
-    int chart_width = max_width - 10;  // 10 znaków na etykiety osi Y i separator
+    // Oblicz szerokość wykresu
+    int chart_width = max_width - 10;
     if (chart_width < 20) chart_width = 20;
+    if (chart_width > 120) chart_width = 120;
     
     // Przygotuj dane do wyświetlenia - wszystkie dostępne dane
     vector<double> display_data(chart_width, 0.0);
@@ -829,23 +392,14 @@ ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int 
         line.push_back(text(ylabel.str()) | color(Color::Cyan));
         line.push_back(text("|") | color(Color::Cyan));
         
-        // Punkty wykresu z symbolami graficznymi
+        // Punkty wykresu
         string chart_line;
         for (int x = 0; x < chart_width; x++) {
             if (has_data[x] && display_data[x] >= threshold) {
-                // Różne symbole w zależności od wysokości wartości
-                double intensity = display_data[x] / max_power;
-                if (intensity > 0.8) {
-                    chart_line += "█";  // Pełny blok
-                } else if (intensity > 0.6) {
-                    chart_line += "▓";  // Ciemny blok
-                } else if (intensity > 0.4) {
-                    chart_line += "▒";  // Średni blok
-                } else {
-                    chart_line += "░";  // Jasny blok
-                }
+                // Zawsze kropka dla punktu powyżej progu
+                chart_line += ".";
             } else if (has_data[x]) {
-                chart_line += "▁";  // Dolny blok (dane poniżej progu)
+                chart_line += "_";  // Dane poniżej progu
             } else {
                 chart_line += " ";  // Brak danych
             }
@@ -885,7 +439,7 @@ ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int 
     rows.push_back(text(time_labels) | color(Color::Cyan));
     
     // Marker aktualnego czasu
-    string current_time_marker = string(7 + chart_width - 1, ' ') + "▲";
+    string current_time_marker = string(7 + chart_width - 1, ' ') + "^";
     rows.push_back(text(current_time_marker) | color(Color::Yellow) | bold);
     
     return vbox(move(rows));
@@ -934,7 +488,6 @@ int main(int argc, char* argv[]) {
     const size_t POWER_HISTORY_MAX = 144; // np. 24h co 10 min
     atomic<bool> should_exit(false);
     atomic<bool> connected(false);
-    atomic<int> display_mode(0); // 0=standard, 1=alarmy
     string connection_status = "Łączenie z " + ip + ":" + to_string(port) + "...";
     mutex data_mutex;
 
@@ -979,29 +532,8 @@ int main(int argc, char* argv[]) {
                 d.phase_A_current = safe_stod(inverter_json["phase_A_current"]);
                 d.phase_B_current = safe_stod(inverter_json["phase_B_current"]);
                 d.phase_C_current = safe_stod(inverter_json["phase_C_current"]);
-                
-                // Parametry PV z sekcji pv_data
-                if (inverter_json.contains("pv_data")) {
-                    auto pv_data = inverter_json["pv_data"];
-                    d.pv1_voltage = safe_stod(pv_data["pv1_voltage"]);                d.pv1_current = safe_stod(pv_data["pv1_current"]);
-                d.pv2_voltage = safe_stod(pv_data["pv2_voltage"]);
-                d.pv2_current = safe_stod(pv_data["pv2_current"]);
-                d.pv1_power = safe_stod(pv_data["pv1_power_calculated"]);
-                d.pv2_power = safe_stod(pv_data["pv2_power_calculated"]);
-                }
-                
                 d.wifi_signal = inverter_json.value("wifi_signal_dbm", -65);
                 d.ping_ms = inverter_json.value("ping_ms", 0);
-                
-                // Statusy i alarmy bitowe
-                d.state1 = inverter_json.value("state1", 0);
-                d.state2 = inverter_json.value("state2", 0);
-                d.state3 = inverter_json.value("state3", 0);
-                d.alarm1 = inverter_json.value("alarm1", 0);
-                d.alarm2 = inverter_json.value("alarm2", 0);
-                d.alarm3 = inverter_json.value("alarm3", 0);
-                d.fault_code = inverter_json.value("fault_code", 0);
-                
                 {
                     lock_guard<mutex> lock(data_mutex);
                     current_data = d;
@@ -1011,20 +543,6 @@ int main(int argc, char* argv[]) {
                     if (power_history.size() > POWER_HISTORY_MAX)
                         power_history.pop_front();
                 }
-                
-                // DODAJ: Zapisz dane do pliku JSON
-                try {
-                    ofstream file(output_file);
-                    if (file.is_open()) {
-                        file << inverter_json.dump(2);  // 2 - wcięcie dla czytelności
-                        file.close();
-                    }
-                } catch (const exception& e) {
-                    // Można dodać logowanie błędu zapisu
-                    lock_guard<mutex> lock(data_mutex);
-                    current_data.last_error = "Błąd zapisu: " + string(e.what());
-                }
-                
             } catch (const exception& e) {
                 lock_guard<mutex> lock(data_mutex);
                 current_data.last_error = string("Błąd: ") + e.what();
@@ -1049,31 +567,6 @@ int main(int argc, char* argv[]) {
             local_chart = chart_mem;
             local_power_history = power_history;
         }
-        
-        // Oblicz dostępną przestrzeń dla wykresu na podstawie rozmiaru terminala
-        auto terminal_size = Terminal::Size();
-        int terminal_width = terminal_size.dimx;
-        int terminal_height = terminal_size.dimy;
-        
-        // Oblicz wysokość zajmowaną przez inne elementy interfejsu:
-        // - nagłówek: 3 linie
-        // - status: 1 linia
-        // - separator: 1 linia 
-        // - info o urządzeniu: 3 linie
-        // - separator: 1 linia
-        // - parametry: 6 linii (box z bordem)
-        // - separator: 1 linia
-        // - błędy: 1 linia (może być pusta)
-        // - separator: 1 linia
-        // - footer: 1 linia
-        // - marginesy i bordy wykresu: 3 linie
-        int used_height = 3 + 1 + 1 + 3 + 1 + 6 + 1 + 1 + 1 + 1 + 3;
-        
-        // Dostępna wysokość dla wykresu (minimum 5 linii)
-        int chart_height = max(5, terminal_height - used_height);
-        
-        // Dostępna szerokość dla wykresu (odejmujemy marginesy)
-        int chart_width = max(40, terminal_width - 4);
         auto status_color = Color::Red;
         if (local_data.device_status.find("On-grid") != string::npos) {
             status_color = Color::Green;
@@ -1086,19 +579,13 @@ int main(int argc, char* argv[]) {
             text("║                    HUAWEI SUN2000 INVERTER MONITOR                           ║") | color(Color::Cyan) | bold,
             text("╚══════════════════════════════════════════════════════════════════════════════╝") | color(Color::Cyan)
         });
-        // Status połączenia z dodatkowymi informacjami o statusach
+        // Status połączenia
         auto status_line = hbox(Elements{
             text("Połączenie: "),
             text(connection_status) | color(connected ? Color::Green : Color::Red),
             text(" | "),
             text("Ostatni odczyt: "),
-            text(local_data.timestamp) | color(Color::White),
-            text(" | "),
-            text("Status: "),
-            analyzeStatusBits(local_data.state1, local_data.state2, local_data.state3),
-            text(" | "),
-            text("Alarmy: "),
-            analyzeAlarmBits(local_data.alarm1, local_data.alarm2, local_data.alarm3)
+            text(local_data.timestamp) | color(Color::White)
         });
         // Informacje o urządzeniu
         auto device_info = hbox(Elements{
@@ -1109,7 +596,7 @@ int main(int argc, char* argv[]) {
             }) | flex,
             vbox(Elements{
                 hbox(Elements{
-                    text("Tryb: "),
+                    text("Status: "),
                     text(local_data.device_status) | color(status_color)
                 }),
                 text("Temperatura: " + to_fixed_1(local_data.temperature) + "°C") |
@@ -1143,51 +630,20 @@ int main(int argc, char* argv[]) {
             text("L3: " + to_fixed_1(local_data.phase_C_voltage)) | color(Color::Magenta)
         }) | border | flex;
         auto current_box = vbox(Elements{
-            text("PRĄDY AC [A]") | center | bold | color(Color::Yellow),
+            text("PRĄDY [A]") | center | bold | color(Color::Yellow),
             separator(),
             text("L1: " + to_fixed_1(local_data.phase_A_current)) | color(Color::Blue),
             text("L2: " + to_fixed_1(local_data.phase_B_current)) | color(Color::Blue),
             text("L3: " + to_fixed_1(local_data.phase_C_current)) | color(Color::Blue)
         }) | border | flex;
-        
-        auto pv_box = vbox(Elements{
-            text("STRINGI PV [POPRAWIONE]") | center | bold | color(Color::Yellow),
-            separator(),
-            text("PV1: " + to_fixed_1(local_data.pv1_voltage) + "V " + 
-                 to_fixed_1(local_data.pv1_current) + "A " + 
-                 to_fixed_1(local_data.pv1_power) + "W") | color(Color::Green),
-            text("PV2: " + to_fixed_1(local_data.pv2_voltage) + "V " + 
-                 to_fixed_1(local_data.pv2_current) + "A " + 
-                 to_fixed_1(local_data.pv2_power) + "W") | color(Color::Green),
-            text("Rejestry: 32016-32019") | color(Color::Cyan)
-        }) | border | flex;
-        auto params_row1 = hbox(Elements{power_box, energy_box, voltage_box, current_box});
-        auto params_row2 = hbox(Elements{pv_box, filler()});
-        auto params_rows = vbox(Elements{params_row1, params_row2});
+        auto params_row = hbox(Elements{power_box, energy_box, voltage_box, current_box});
         // Błędy
         auto error_line = local_data.last_error.empty() ?
             text("") :
             text("Błąd: " + local_data.last_error) | color(Color::Red);
-        // Footer z instrukcjami
-        auto footer = text("Naciśnij 'q' aby zakończyć | 'r' odświeżenie | 'a' alarmy | Tryb: " + 
-            string(display_mode == 0 ? "STANDARD" : "ALARMY") + " | Interwał: " +
+        // Footer
+        auto footer = text("Naciśnij 'q' aby zakończyć | 'r' aby wymusić odświeżenie | Interwał: " +
             to_string(interval) + "s") | color(Color::Red) | center;
-        
-        // Wybór zawartości w zależności od trybu
-        Element main_content;
-        if (display_mode == 1) {
-            // Tryb alarmów - pokaż szczegółowe informacje o alarmach
-            main_content = generateDetailedAlarms(local_data.alarm1, local_data.alarm2, 
-                                                 local_data.alarm3, local_data.fault_code);
-        } else {
-            // Tryb standardowy - pokaż wykres mocy i parametry
-            main_content = vbox(Elements{
-                params_rows,
-                separator(),
-                drawPowerChartFromHistory(local_power_history, chart_width, chart_height) | border | flex
-            });
-        }
-        
         // Złóż wszystko razem
         return vbox(Elements{
             header,
@@ -1195,7 +651,9 @@ int main(int argc, char* argv[]) {
             separator(),
             device_info,
             separator(),
-            main_content,
+            params_row,
+            separator(),
+            drawPowerChartFromHistory(local_power_history) | border | flex,
             error_line,
             separator(),
             footer
