@@ -53,24 +53,19 @@ struct InverterData {
     string last_error = "";
 };
 
-// --- PowerChart ---
-struct PowerChart {
-    static const int MAX_POINTS = 144;
-    vector<pair<chrono::system_clock::time_point, double>> data;
-    double max_power = 0.0;
+// Funkcja pomocnicza do formatowania liczby do 1 miejsca po przecinku
+inline std::string to_fixed_1(double val) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1) << val;
+    return oss.str();
+}
 
-    void add(double power) {
-        auto now = chrono::system_clock::now();
-        if (data.size() == MAX_POINTS)
-            data.erase(data.begin());
-        data.push_back({now, power});
-        max_power = 0.0;
-        for (const auto& p : data) max_power = max(max_power, p.second);
-    }
-    double getMaxPower() const { return max_power; }
-    int getDataCount() const { return data.size(); }
-    vector<pair<chrono::system_clock::time_point, double>> getData() const { return data; }
-};
+// Funkcja pomocnicza do formatowania liczby do 2 miejsc po przecinku
+inline std::string to_fixed_2(double val) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2) << val;
+    return oss.str();
+}
 
 class HuaweiSun2000 {
 private:
@@ -157,61 +152,55 @@ public:
             
             // Podstawowe parametry
             uint16_t temperature = readHoldingRegister(32087);
-            data["internal_temperature"] = to_string(temperature * 0.1);
+            data["internal_temperature"] = to_fixed_1(temperature * 0.1);
             
             uint32_t daily_energy = readHoldingRegister32(32114);
-            data["daily_yield_energy"] = to_string(daily_energy * 0.01);
+            data["daily_yield_energy"] = to_fixed_2(daily_energy * 0.01);
             
             uint32_t total_energy = readHoldingRegister32(32106);
-            data["accumulated_energy_yield"] = to_string(total_energy * 0.01);
+            data["accumulated_energy_yield"] = to_fixed_2(total_energy * 0.01);
             
             uint32_t active_power = readHoldingRegister32(32080);
-            data["active_power"] = to_string((double)active_power);
+            data["active_power"] = to_fixed_1((double)active_power);
             
             uint32_t input_power = readHoldingRegister32(32064);
-            data["input_power"] = to_string((double)input_power);
+            data["input_power"] = to_fixed_1((double)input_power);
             
             uint16_t efficiency_reg = readHoldingRegister(32086);
-            data["efficiency"] = to_string(efficiency_reg * 0.01);
+            data["efficiency"] = to_fixed_2(efficiency_reg * 0.01);
             
-            // Częstotliwość sieci - poprawny współczynnik skalowania i alternatywne adresy
+            // Częstotliwość sieci
             uint16_t grid_frequency = readHoldingRegister(32085);
             if (grid_frequency == 0) {
-                // Spróbuj adresu z MeterEquipmentRegister  
                 grid_frequency = readHoldingRegister(37118);
             }
             
-            // Debug - wartości surowe
-            data["debug_freq_32085"] = readHoldingRegister(32085);
-            data["debug_freq_37118"] = readHoldingRegister(37118);
-            
-            double frequency_hz = grid_frequency / 100.0;  // Współczynnik 100, nie 0.01!
-            // Walidacja rozumnej wartości częstotliwości (45-65 Hz)
+            double frequency_hz = grid_frequency / 100.0;
             if (frequency_hz < 45.0 || frequency_hz > 65.0) {
                 data["grid_frequency"] = "0.00";
             } else {
-                data["grid_frequency"] = to_string(frequency_hz);
+                data["grid_frequency"] = to_fixed_2(frequency_hz);
             }
             
             // Napięcia fazowe
             uint16_t ac_voltage_a = readHoldingRegister(32069);
-            data["phase_A_voltage"] = to_string(ac_voltage_a * 0.1);
+            data["phase_A_voltage"] = to_fixed_1(ac_voltage_a * 0.1);
             
             uint16_t ac_voltage_b = readHoldingRegister(32070);
-            data["phase_B_voltage"] = to_string(ac_voltage_b * 0.1);
+            data["phase_B_voltage"] = to_fixed_1(ac_voltage_b * 0.1);
             
             uint16_t ac_voltage_c = readHoldingRegister(32071);
-            data["phase_C_voltage"] = to_string(ac_voltage_c * 0.1);
+            data["phase_C_voltage"] = to_fixed_1(ac_voltage_c * 0.1);
             
             // Prądy fazowe
             int32_t ac_current_a = (int32_t)readHoldingRegister32(32072);
-            data["phase_A_current"] = to_string(ac_current_a / 1000.0);
+            data["phase_A_current"] = to_fixed_2(ac_current_a / 1000.0);
             
             int32_t ac_current_b = (int32_t)readHoldingRegister32(32074);
-            data["phase_B_current"] = to_string(ac_current_b / 1000.0);
+            data["phase_B_current"] = to_fixed_2(ac_current_b / 1000.0);
             
             int32_t ac_current_c = (int32_t)readHoldingRegister32(32076);
-            data["phase_C_current"] = to_string(ac_current_c / 1000.0);
+            data["phase_C_current"] = to_fixed_2(ac_current_c / 1000.0);
             
             // Dummy values
             data["sn"] = "HV1234567890";
@@ -227,143 +216,51 @@ public:
     }
 };
 
-// Funkcja do rysowania wykresu w FTXUI
-Element drawPowerChart(PowerChart& chart, int max_width = 80, int height = 10) {
-    auto data = chart.getData();
-    
-    vector<Element> rows;
-    
-    // Tytuł i maksymalna moc
-    auto title_row = hbox(vector<Element>{
-        text("WYKRES MOCY (ostatnie 24h)") | bold | color(Color::Yellow),
-        text(" | Max: ") | color(Color::White),
-        text(to_string(int(chart.getMaxPower())) + "W") | color(Color::Red) | bold,
-        text(" | Punktów: ") | color(Color::White),
-        text(to_string(chart.getDataCount())) | color(Color::Cyan),
-    });
-    rows.push_back(title_row | center);
-    
-    if (data.empty() || chart.getMaxPower() == 0) {
-        rows.push_back(text("Zbieranie danych...") | center | color(Color::Yellow));
-        return vbox(move(rows)) | border;
-    }
-    
-    // Oblicz szerokość wykresu
-    int chart_width = max_width - 10;
-    if (chart_width < 20) chart_width = 20;
-    if (chart_width > 120) chart_width = 120;
-    
-    // Przygotuj dane do wyświetlenia - wszystkie dostępne dane
-    vector<double> display_data(chart_width, 0.0);
-    vector<bool> has_data(chart_width, false);
-    
-    // Mapuj dane na szerokość wykresu
-    int data_size = data.size();
-    if (data_size > 0) {
-        for (int i = 0; i < chart_width; i++) {
-            // Mapuj pozycję i na indeks w danych
-            int data_idx = (i * data_size) / chart_width;
-            if (data_idx < data_size) {
-                display_data[i] = data[data_idx].second;
-                has_data[i] = true;
-            }
+// Funkcja do zapisu danych JSON do pliku
+void saveJsonToFile(const json& data, const string& filename) {
+    try {
+        ofstream file(filename);
+        if (file.is_open()) {
+            file << data.dump(2); // 2 spacje wcięcia dla czytelności
+            file.close();
         }
+    } catch (const exception& e) {
+        // W przypadku błędu, kontynuuj działanie
+        cerr << "Błąd zapisu JSON: " << e.what() << endl;
     }
-    
-    double max_power = chart.getMaxPower();
-    
-    // Rysuj wykres
-    for (int y = height - 1; y >= 0; y--) {
-        double threshold = (double(y + 1) / height) * max_power;
-        
-        vector<Element> line;
-        
-        // Etykieta osi Y
-        stringstream ylabel;
-        ylabel << setw(5) << int(threshold) << "W";
-        line.push_back(text(ylabel.str()) | color(Color::Cyan));
-        line.push_back(text("|") | color(Color::Cyan));
-        
-        // Punkty wykresu
-        string chart_line;
-        for (int x = 0; x < chart_width; x++) {
-            if (has_data[x]) {
-                if (display_data[x] >= threshold) {
-                    chart_line += ".";  // Kropka = jest wartość powyżej progu
-                } else {
-                    chart_line += "_";  // Dane poniżej progu
-                }
-            } else {
-                chart_line += " ";  // Brak danych
-            }
-        }
-        
-        line.push_back(text(chart_line) | color(Color::Green));
-        rows.push_back(hbox(move(line)));
-    }
-    
-    // Oś X
-    rows.push_back(text("      L" + string(chart_width, '-')) | color(Color::Cyan));
-    
-    // Etykiety czasu - pokazuj kilka punktów w czasie
-    auto now = chrono::system_clock::now();
-    string time_labels = "       ";
-    
-    // Pokazuj etykiety co 1/4 szerokości wykresu
-    for (int i = 0; i <= 4; i++) {
-        auto label_time = now - chrono::hours(6 * i);  // Co 6 godzin: teraz, -6h, -12h, -18h, -24h
-        auto label_time_t = chrono::system_clock::to_time_t(label_time);
-        auto label_tm = localtime(&label_time_t);
-        
-        stringstream label;
-        if (i == 0) {
-            label << "TERAZ";
-        } else {
-            label << "-" << (6 * i) << "h";
-        }
-        
-        int pos = ((4 - i) * chart_width) / 4;  // Odwróć kolejność (najnowsze na prawej)
-        int padding = pos - (time_labels.length() - 7);
-        if (padding > 0 && i < 4) {
-            time_labels += string(padding, ' ') + label.str();
-        }
-    }
-    
-    rows.push_back(text(time_labels) | color(Color::Cyan));
-    
-    // Marker aktualnego czasu
-    string current_time_marker = string(7 + chart_width - 1, ' ') + "^";
-    rows.push_back(text(current_time_marker) | color(Color::Yellow) | bold);
-    
-    return vbox(move(rows));
 }
 
-// Deklaracja funkcji wykresu na podstawie historii
-ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int max_width = 80, int height = 10) {
+// Funkcja wykresu dostosowująca się do rozmiaru okna z blokami Unicode
+ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history) {
     if (history.empty()) {
         return text("Brak danych historycznych") | center | color(Color::Yellow);
     }
     
+    // Pobierz rozmiar terminala
+    auto screen_size = Terminal::Size();
+    int terminal_width = screen_size.dimx;
+    int terminal_height = screen_size.dimy;
+    
+    // Oblicz rozmiar wykresu (pozostaw miejsce na UI)
+    int chart_width = max(20, terminal_width - 15);  // 15 znaków na etykiety Y i marginesy
+    int chart_height = max(8, terminal_height / 3);   // 1/3 wysokości terminala
+    
     double max_power = *max_element(history.begin(), history.end());
+    if (max_power <= 0) max_power = 1.0; // Unikaj dzielenia przez 0
     
     vector<Element> rows;
     
-    // Tytuł i maksymalna moc
+    // Tytuł
     auto title_row = hbox(vector<Element>{
-        text("WYKRES MOCY (historia)") | bold | color(Color::Yellow),
+        text("WYKRES MOCY") | bold | color(Color::Yellow),
         text(" | Max: ") | color(Color::White),
-        text(to_string(int(max_power)) + "W") | color(Color::Red) | bold,
-        text(" | Punków: ") | color(Color::White),
+        text(to_fixed_1(max_power) + "W") | color(Color::Red) | bold,
+        text(" | Punktów: ") | color(Color::White),
         text(to_string(history.size())) | color(Color::Cyan),
     });
     rows.push_back(title_row | center);
     
-    // Oblicz szerokość wykresu
-    int chart_width = max_width - 10;
-    if (chart_width < 20) chart_width = 20;
-    if (chart_width > 120) chart_width = 120;
-    
-    // Przygotuj dane do wyświetlenia - wszystkie dostępne dane
+    // Przygotuj dane do wyświetlenia
     vector<double> display_data(chart_width, 0.0);
     vector<bool> has_data(chart_width, false);
     
@@ -371,7 +268,6 @@ ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int 
     int data_size = history.size();
     if (data_size > 0) {
         for (int i = 0; i < chart_width; i++) {
-            // Mapuj pozycję i na indeks w danych
             int data_idx = (i * data_size) / chart_width;
             if (data_idx < data_size) {
                 display_data[i] = history[data_idx];
@@ -380,76 +276,89 @@ ftxui::Element drawPowerChartFromHistory(const std::deque<double>& history, int 
         }
     }
     
-    // Rysuj wykres
-    for (int y = height - 1; y >= 0; y--) {
-        double threshold = (double(y + 1) / height) * max_power;
+    // Rysuj wykres używając bloków Unicode
+    for (int y = chart_height - 1; y >= 0; y--) {
+        double threshold = (double(y + 1) / chart_height) * max_power;
         
         vector<Element> line;
         
         // Etykieta osi Y
         stringstream ylabel;
-        ylabel << setw(5) << int(threshold) << "W";
+        ylabel << setw(6) << fixed << setprecision(0) << threshold << "W";
         line.push_back(text(ylabel.str()) | color(Color::Cyan));
-        line.push_back(text("|") | color(Color::Cyan));
+        line.push_back(text("│") | color(Color::Cyan));
         
-        // Punkty wykresu
+        // Punkty wykresu z blokami Unicode
         string chart_line;
         for (int x = 0; x < chart_width; x++) {
-            if (has_data[x] && display_data[x] >= threshold) {
-                // Zawsze kropka dla punktu powyżej progu
-                chart_line += ".";
-            } else if (has_data[x]) {
-                chart_line += "_";  // Dane poniżej progu
+            if (has_data[x]) {
+                double value = display_data[x];
+                double ratio = value / max_power;
+                double y_pos = (double(y) / chart_height);
+                
+                if (ratio >= y_pos + (1.0 / chart_height)) {
+                    // Pełny blok
+                    chart_line += "█";
+                } else if (ratio >= y_pos + (0.75 / chart_height)) {
+                    // 3/4 bloku
+                    chart_line += "▊";
+                } else if (ratio >= y_pos + (0.5 / chart_height)) {
+                    // Połowa bloku
+                    chart_line += "▌";
+                } else if (ratio >= y_pos + (0.25 / chart_height)) {
+                    // 1/4 bloku
+                    chart_line += "▎";
+                } else if (ratio > y_pos) {
+                    // Cienka linia
+                    chart_line += "▏";
+                } else {
+                    chart_line += " ";
+                }
             } else {
-                chart_line += " ";  // Brak danych
+                chart_line += " ";
             }
         }
         
-        line.push_back(text(chart_line) | color(Color::Green));
+        auto chart_color = Color::Green;
+        if (max_power > 5000) chart_color = Color::Red;      // Wysokie obciążenie
+        else if (max_power > 3000) chart_color = Color::Yellow; // Średnie obciążenie
+        
+        line.push_back(text(chart_line) | color(chart_color));
         rows.push_back(hbox(move(line)));
     }
     
     // Oś X
-    rows.push_back(text("      L" + string(chart_width, '-')) | color(Color::Cyan));
+    string bottom_line = "      └" + string(chart_width, '-') + "┘";
+    rows.push_back(text(bottom_line) | color(Color::Cyan));
     
-    // Etykiety czasu - pokazuj kilka punktów w czasie
+    // Etykiety czasu
     auto now = chrono::system_clock::now();
-    string time_labels = "       ";
+    vector<Element> time_labels;
+    time_labels.push_back(text("        ") | color(Color::Cyan)); // Offset dla etykiet Y
     
-    // Pokazuj etykiety co 1/4 szerokości wykresu
     for (int i = 0; i <= 4; i++) {
-        auto label_time = now - chrono::hours(6 * i);  // Co 6 godzin: teraz, -6h, -12h, -18h, -24h
+        auto label_time = now - chrono::hours(6 * (4-i)); // Odwróć kolejność
         auto label_time_t = chrono::system_clock::to_time_t(label_time);
         auto label_tm = localtime(&label_time_t);
         
         stringstream label;
-        if (i == 0) {
+        if (i == 4) {
             label << "TERAZ";
         } else {
-            label << "-" << (6 * i) << "h";
+            label << "-" << (6 * (4-i)) << "h";
         }
         
-        int pos = ((4 - i) * chart_width) / 4;  // Odwróć kolejność (najnowsze na prawej)
-        int padding = pos - (time_labels.length() - 7);
-        if (padding > 0 && i < 4) {
-            time_labels += string(padding, ' ') + label.str();
+        int pos = (i * chart_width) / 4;
+        if (i > 0) {
+            int spacing = (chart_width / 4) - 4; // -4 dla długości etykiety
+            time_labels.push_back(text(string(max(1, spacing), ' ')) | color(Color::Cyan));
         }
+        time_labels.push_back(text(label.str()) | color(Color::Cyan));
     }
     
-    rows.push_back(text(time_labels) | color(Color::Cyan));
-    
-    // Marker aktualnego czasu
-    string current_time_marker = string(7 + chart_width - 1, ' ') + "^";
-    rows.push_back(text(current_time_marker) | color(Color::Yellow) | bold);
+    rows.push_back(hbox(move(time_labels)));
     
     return vbox(move(rows));
-}
-
-// Funkcja pomocnicza do formatowania liczby do 1 miejsca po przecinku
-inline std::string to_fixed_1(double val) {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(1) << val;
-    return oss.str();
 }
 
 int main(int argc, char* argv[]) {
@@ -483,7 +392,6 @@ int main(int argc, char* argv[]) {
 
     // --- Stan współdzielony ---
     InverterData current_data;
-    PowerChart chart_mem;
     std::deque<double> power_history; // dynamiczna tabela mocy
     const size_t POWER_HISTORY_MAX = 144; // np. 24h co 10 min
     atomic<bool> should_exit(false);
@@ -508,6 +416,10 @@ int main(int argc, char* argv[]) {
             }
             try {
                 json inverter_json = inverter.readInverterData();
+                
+                // Zapisz dane do pliku JSON
+                saveJsonToFile(inverter_json, output_file);
+                
                 InverterData d;
                 d.timestamp = inverter_json.value("timestamp", "N/A");
                 d.model = inverter_json.value("model", "N/A");
@@ -537,7 +449,6 @@ int main(int argc, char* argv[]) {
                 {
                     lock_guard<mutex> lock(data_mutex);
                     current_data = d;
-                    chart_mem.add(d.active_power);
                     // Dodaj moc do historii
                     power_history.push_back(d.active_power);
                     if (power_history.size() > POWER_HISTORY_MAX)
@@ -559,12 +470,10 @@ int main(int argc, char* argv[]) {
     // --- Renderer ---
     auto renderer = Renderer([&]() -> ftxui::Element {
         InverterData local_data;
-        PowerChart local_chart;
         std::deque<double> local_power_history;
         {
             lock_guard<mutex> lock(data_mutex);
             local_data = current_data;
-            local_chart = chart_mem;
             local_power_history = power_history;
         }
         auto status_color = Color::Red;
